@@ -4,6 +4,24 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import cv2
+import os
+import json
+from datetime import datetime
+from pathlib import Path
+import shutil
+import time
+import logging
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('colony_counter.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('ColonyCounter')
 
 # FastSAM 모델 로드
 model = YOLO('./weights/FastSAM-x.pt')
@@ -14,52 +32,186 @@ device = torch.device(
     "mps" if torch.backends.mps.is_available() else "cpu"
 )
 
+class ImageManager:
+    def __init__(self, base_path="./data"):
+        self.base_path = Path(base_path)
+        self._create_directories()
+        self.current_session_id = None
+        
+    def _create_directories(self):
+        """필요한 디렉토리 구조 생성"""
+        directories = [
+            self.base_path / "images" / "original",
+            self.base_path / "images" / "analyzed",
+            self.base_path / "images" / "overlay",
+            self.base_path / "metadata"
+        ]
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True)
+            
+    def generate_filename(self, suffix):
+        """타임스탬프 기반 파일명 생성"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"{timestamp}_{suffix}"
+        
+    def save_images(self, original_image, analyzed_image, overlay_image=None):
+        """이미지 세트 저장"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 원본 이미지 저장
+            original_path = self.base_path / "images" / "original" / f"{timestamp}_original.jpg"
+            Image.fromarray(original_image).save(original_path)
+            
+            # 분석된 이미지 저장
+            analyzed_path = self.base_path / "images" / "analyzed" / f"{timestamp}_analyzed.jpg"
+            Image.fromarray(analyzed_image).save(analyzed_path)
+            
+            # 오버레이 이미지 저장
+            if overlay_image is not None:
+                overlay_path = self.base_path / "images" / "overlay" / f"{timestamp}_overlay.jpg"
+                Image.fromarray(overlay_image).save(overlay_path)
+                
+            logger.info(f"Images saved successfully with timestamp: {timestamp}")
+            return timestamp
+        except Exception as e:
+            logger.error(f"Error saving images: {str(e)}")
+            raise
+            
+    def save_metadata(self, timestamp, metadata):
+        """메타데이터 저장"""
+        try:
+            metadata_path = self.base_path / "metadata" / f"{timestamp}_metadata.json"
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=4, ensure_ascii=False)
+            logger.info(f"Metadata saved successfully: {timestamp}")
+        except Exception as e:
+            logger.error(f"Error saving metadata: {str(e)}")
+            raise
+
+    def start_new_session(self, image_name="unknown"):
+        """새로운 분석 세션 시작"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_session_id = f"{timestamp}_{image_name}"
+        return self.current_session_id
+
+    def save_initial_results(self, original_image, analyzed_image, metadata):
+        """초기 분석 결과 저장"""
+        try:
+            if self.current_session_id is None:
+                raise ValueError("No active session")
+
+            # 원본 이미지 저장
+            original_path = self.base_path / "images" / "original" / f"{self.current_session_id}_original.jpg"
+            Image.fromarray(original_image).save(original_path)
+            
+            # 분석된 이미지 저장
+            analyzed_path = self.base_path / "images" / "analyzed" / f"{self.current_session_id}_initial.jpg"
+            Image.fromarray(analyzed_image).save(analyzed_path)
+
+            # 초기 메타데이터 저장
+            metadata_path = self.base_path / "metadata" / f"{self.current_session_id}_metadata.json"
+            metadata["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=4, ensure_ascii=False)
+
+            logger.info(f"Initial results saved for session: {self.current_session_id}")
+        except Exception as e:
+            logger.error(f"Error saving initial results: {str(e)}")
+            raise
+
+    def update_session(self, analyzed_image, metadata):
+        """최종 결과 업데이트"""
+        try:
+            if self.current_session_id is None:
+                raise ValueError("No active session")
+
+            # 최종 분석 이미지 저장
+            analyzed_path = self.base_path / "images" / "analyzed" / f"{self.current_session_id}_final.jpg"
+            Image.fromarray(analyzed_image).save(analyzed_path)
+
+            # 메타데이터 업데이트
+            metadata_path = self.base_path / "metadata" / f"{self.current_session_id}_metadata.json"
+            
+            try:
+                # 기존 메타데이터 읽기 시도
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    existing_metadata = json.load(f)
+                
+                # 메타데이터 업데이트
+                existing_metadata.update(metadata)
+                existing_metadata["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            except FileNotFoundError:
+                # 파일이 없는 경우 새로 생성
+                existing_metadata = {
+                    "session_id": self.current_session_id,
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    **metadata
+                }
+
+            # 메타데이터 저장
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(existing_metadata, f, indent=4, ensure_ascii=False)
+
+            logger.info(f"Session updated: {self.current_session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating session: {str(e)}")
+            raise
+
 def fast_process(colony_annotations, dish_annotation, image, device, scale, better_quality, mask_random_color, bbox, use_retina, withContours):
     """
     마스크 주석을 기반으로 이미지를 처리하고, 페트리 접시는 외곽선만 그리며 콜로니는 채우고 외곽선을 그립니다.
     """
-    image_np = np.array(image).copy()
+    try:
+        image_np = np.array(image).copy()
 
-    # 콜로니 마스크 처리
-    for ann in colony_annotations:
-        mask = ann.cpu().numpy()
-        if mask.ndim == 2:
-            mask = mask > 0
-            if mask_random_color:
-                color = np.random.randint(0, 255, (3,)).tolist()
-                image_np[mask] = color
-            else:
-                image_np[mask] = (0, 255, 0)  # 기본 초록색
+        # 콜로니 마스크 처리
+        for ann in colony_annotations:
+            mask = ann.cpu().numpy()
+            if mask.ndim == 2:
+                mask = mask > 0
+                if mask_random_color:
+                    color = np.random.randint(0, 255, (3,)).tolist()
+                    image_np[mask] = color
+                else:
+                    image_np[mask] = (0, 255, 0)  # 기본 초록색
 
-        if withContours:
-            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(image_np, contours, -1, (255, 0, 0), 2)  # 파란색 경계선
-
-    # 페트리 접시 마스크 처리 (외곽선만)
-    if dish_annotation is not None:
-        dish_mask = dish_annotation.cpu().numpy()
-        if dish_mask.ndim == 2:
-            dish_mask = dish_mask > 0
             if withContours:
-                contours, _ = cv2.findContours(dish_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(image_np, contours, -1, (0, 0, 255), 3)  # 빨간색 외곽선
+                contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(image_np, contours, -1, (255, 0, 0), 2)  # 파란색 경계선
 
-    processed_image = Image.fromarray(image_np)
-    return processed_image
+        # 페트리 접시 마스크 처리 (외곽선만)
+        if dish_annotation is not None:
+            dish_mask = dish_annotation.cpu().numpy()
+            if dish_mask.ndim == 2:
+                dish_mask = dish_mask > 0
+                if withContours:
+                    contours, _ = cv2.findContours(dish_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(image_np, contours, -1, (0, 0, 255), 3)  # 빨간색 외곽선
+
+        processed_image = Image.fromarray(image_np)
+        return processed_image
+    except Exception as e:
+        logger.error(f"Error in fast_process: {str(e)}")
+        raise
 
 class ColonyCounter:
     def __init__(self):
-        self.manual_points = []  # 수동으로 추가된 포인트 저장
-        self.auto_points = []    # 자동 감지된 colony의 중심점 저장
+        self.manual_points = []
+        self.auto_points = []
         self.current_image = None
         self.auto_detected_count = 0
         self.remove_mode = False
         self.original_image = None
         self.last_method = None
-
+        self.image_manager = ImageManager()
+        
     def reset(self):
         self.manual_points = []
-        self.auto_points = []  # 자동 포인트 초기화 추가
+        self.auto_points = []
         self.current_image = None
         self.auto_detected_count = 0
         self.remove_mode = False
@@ -68,6 +220,60 @@ class ColonyCounter:
 
     def set_original_image(self, image):
         self.original_image = np.array(image)
+
+    def save_analysis_results(self, original_image, analyzed_image, analysis_params):
+        """분석 결과 저장"""
+        try:
+            # 오버레이 이미지 생성
+            overlay_image = self.create_overlay(original_image, analyzed_image)
+            
+            # 이미지 저장 및 타임스탬프 받기
+            timestamp = self.image_manager.save_images(
+                original_image,
+                analyzed_image,
+                overlay_image
+            )
+            
+            # 메타데이터 생성
+            metadata = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "counts": {
+                    "total": self.auto_detected_count + len(self.manual_points),
+                    "auto_detected": self.auto_detected_count,
+                    "manually_added": len(self.manual_points)
+                },
+                "analysis_params": analysis_params,
+                "processing_time": time.time() - self._start_time if hasattr(self, '_start_time') else None
+            }
+            
+            # 메타데이터 저장
+            self.image_manager.save_metadata(timestamp, metadata)
+            logger.info(f"Analysis results saved successfully: {timestamp}")
+        except Exception as e:
+            logger.error(f"Error saving analysis results: {str(e)}")
+            raise
+            
+    def create_overlay(self, original_image, analyzed_image):
+        """원본과 분석 결과를 합친 오버레이 이미지 생성"""
+        try:
+            # 이미지가 numpy array가 아니면 변환
+            if isinstance(original_image, Image.Image):
+                original_image = np.array(original_image)
+            if isinstance(analyzed_image, Image.Image):
+                analyzed_image = np.array(analyzed_image)
+                
+            # 이미지 크기 맞추기
+            if original_image.shape != analyzed_image.shape:
+                analyzed_image = cv2.resize(analyzed_image, 
+                                        (original_image.shape[1], original_image.shape[0]),
+                                        interpolation=cv2.INTER_LINEAR)
+                    
+            # 오버레이 생성
+            overlay = cv2.addWeighted(original_image, 0.7, analyzed_image, 0.3, 0)
+            return overlay
+        except Exception as e:
+            logger.error(f"Error creating overlay: {str(e)}")
+            raise
 
     def toggle_remove_mode(self):
         self.remove_mode = not self.remove_mode
@@ -95,7 +301,7 @@ class ColonyCounter:
             img_with_points = self.draw_points()
             return img_with_points, self.get_count_text()
         except Exception as e:
-            print(f"Error in add_or_remove_point: {str(e)}")
+            logger.error(f"Error in add_or_remove_point: {str(e)}")
             return image, self.get_count_text()
 
     def find_closest_point(self, x, y, threshold=20):
@@ -118,7 +324,7 @@ class ColonyCounter:
                 return img_with_points, self.get_count_text()
             return image, self.get_count_text()
         except Exception as e:
-            print(f"Error in remove_last_point: {str(e)}")
+            logger.error(f"Error in remove_last_point: {str(e)}")
             return image, self.get_count_text()
 
     def get_count_text(self):
@@ -128,7 +334,7 @@ class ColonyCounter:
                     f"🤖 Auto detected: {self.auto_detected_count}\n"
                     f"👆 Manually added: {len(self.manual_points)}")
         except Exception as e:
-            print(f"Error in get_count_text: {str(e)}")
+            logger.error(f"Error in get_count_text: {str(e)}")
             return "Error calculating count"
 
     def draw_points(self):
@@ -160,12 +366,10 @@ class ColonyCounter:
                                 (text_x + dx, text_y + dy),
                                 font, font_scale, (0, 0, 0), outline_thickness)
 
-                #흰색 텍스트
+                # 흰색 텍스트
                 cv2.putText(img_with_points, text,
                             (text_x, text_y),
                             font, font_scale, (255, 255, 255), font_thickness)
-                
-
 
             # 수동 포인트 모두 한번에 그리기
             for x, y in self.manual_points:
@@ -176,7 +380,7 @@ class ColonyCounter:
             # 한 번의 addWeighted 연산으로 처리
             cv2.addWeighted(overlay, 0.4, img_with_points, 1.0, 0, img_with_points)
 
-            # 수동 포인트에 번호 표시
+            # 수동 포인트에 번호 표시 (텍스트 색상을 빨간색으로 변경)
             for idx, (x, y) in enumerate(self.manual_points, len(self.auto_points) + 1):
                 text = str(idx)
                 (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
@@ -189,10 +393,10 @@ class ColonyCounter:
                                 (text_x + dx, text_y + dy),
                                 font, font_scale, (0, 0, 0), outline_thickness)
 
-                # 흰색 텍스트
+                # 빨간색 텍스트
                 cv2.putText(img_with_points, text,
                             (text_x, text_y),
-                            font, font_scale, (255, 0, 0), font_thickness) # 흰색은 255, 255, 255
+                            font, font_scale, (255, 0, 0), font_thickness)  # (B, G, R) 형식으로 빨간색
 
             # 제거 모드 표시
             if self.remove_mode:
@@ -204,8 +408,41 @@ class ColonyCounter:
 
             return img_with_points
         except Exception as e:
-            print(f"Error in draw_points: {str(e)}")
+            logger.error(f"Error in draw_points: {str(e)}")
             return self.current_image
+
+    def save_final_results(self):
+        """최종 결과 저장"""
+        try:
+            if not hasattr(self, 'current_image') or self.current_image is None:
+                return "No analysis results to save"
+
+            if self.image_manager.current_session_id is None:
+                # 세션이 없는 경우 새로 생성
+                image_name = "unknown"
+                self.image_manager.start_new_session(image_name)
+
+            # 최종 메타데이터 생성
+            final_metadata = {
+                "final_count": {
+                    "auto_detected": self.auto_detected_count,
+                    "manually_added": len(self.manual_points),
+                    "total": self.auto_detected_count + len(self.manual_points)
+                },
+                "manual_points": [(int(x), int(y)) for x, y in self.manual_points],
+                "completion_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            # 최종 이미지와 메타데이터 업데이트
+            self.image_manager.update_session(
+                self.current_image,
+                final_metadata
+            )
+
+            return f"Results saved successfully! (Session ID: {self.image_manager.current_session_id})"
+        except Exception as e:
+            logger.error(f"Error saving final results: {str(e)}")
+            return f"Error saving results: {str(e)}"
 
 counter = ColonyCounter()
 
@@ -227,8 +464,13 @@ def segment_and_count_colonies(
             return None, "No input image provided."
 
         counter.reset()
+        counter._start_time = time.time()
         counter.set_original_image(input_image)
         counter.last_method = method.upper()
+
+        # 새로운 세션 시작
+        image_name = getattr(input_image, 'filename', 'unknown')
+        counter.image_manager.start_new_session(image_name)
 
         # 입력 이미지 크기 조정
         input_size = int(input_size)
@@ -315,13 +557,35 @@ def segment_and_count_colonies(
         # draw_points를 호출하여 숫자 표시
         counter.current_image = counter.draw_points()
 
+        # 분석 결과 저장
+        analysis_params = {
+            "method": method,
+            "input_size": input_size,
+            "iou_threshold": iou_threshold,
+            "conf_threshold": conf_threshold,
+            "better_quality": better_quality,
+            "withContours": withContours,
+            "mask_random_color": mask_random_color,
+            "min_area_percentile": min_area_percentile,
+            "max_area_percentile": max_area_percentile,
+            "circularity_threshold": circularity_threshold
+        }
+        
+        counter.save_analysis_results(
+            np.array(input_image),
+            counter.current_image,
+            analysis_params
+        )
+        
         return counter.current_image, counter.get_count_text()
-
+        
     except Exception as e:
-        print(f"Error in segment_and_count_colonies: {str(e)}")
+        logger.error(f"Error in segment_and_count_colonies: {str(e)}")
         if input_image is not None:
             return np.array(input_image), f"Error processing image: {str(e)}"
         return None, f"Error processing image: {str(e)}"
+
+counter = ColonyCounter()
 
 # CSS 스타일 정의
 css = """
@@ -344,17 +608,17 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
     gr.Markdown(
         """
         <div class="header">
-            <h1>🔬 Advanced Colony Counter</h1>
-            <h3>Automated Colony Detection with Manual Correction</h3>
+            <h1>🔬 고급 콜로니 카운터</h1>
+            <h3>자동 콜로니 감지 및 수동 수정 기능</h3>
         </div>
         """
     )
 
-    with gr.Tab("Colony Counter"):
+    with gr.Tab("콜로니 카운터"):
         with gr.Row():
             with gr.Column(scale=1):
                 input_image = gr.Image(
-                    label="Upload Image",
+                    label="이미지 업로드",
                     type="pil",
                     elem_classes="input-image"
                 )
@@ -362,92 +626,98 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                     method_select = gr.Radio(
                         choices=['FastSAM'],
                         value='FastSAM',
-                        label="Detection Method",
-                        info="Choose AI-based detection method"
+                        label="탐지 방법",
+                        info="AI 기반 탐지 방식을 선택하세요"
                     )
                     segment_button = gr.Button(
-                        "🔍 Analyze Image",
+                        "🔍 이미지 분석",
                         variant="primary",
                         scale=2
                     )
 
-                with gr.Accordion("⚙️ Analysis Settings", open=False):
-                    with gr.Tab("General"):
+                with gr.Accordion("⚙️ 분석 설정", open=False):
+                    with gr.Tab("일반"):
                         input_size_slider = gr.Slider(
                             512, 1024, 1024,
                             step=64,
-                            label="Input Size",
-                            info="Larger size = better accuracy but slower"
+                            label="입력 크기",
+                            info="크면 정확도가 높아지지만 처리 속도가 느려집니다"
                         )
                         better_quality_checkbox = gr.Checkbox(
-                            label="Enhanced Quality",
+                            label="향상된 품질",
                             value=True,
-                            info="Improve output quality at the cost of speed"
+                            info="속도를 희생하고 출력 품질을 향상시킵니다"
                         )
                         withContours_checkbox = gr.Checkbox(
-                            label="Show Contours",
+                            label="외곽선 표시",
                             value=True,
-                            info="Display colony boundaries"
+                            info="콜로니의 경계선을 표시합니다"
                         )
 
                     with gr.Tab("FastSAM"):
                         iou_threshold_slider = gr.Slider(
                             0.1, 0.9, 0.7,
-                            label="IOU Threshold",
-                            info="Higher = stricter overlap detection"
+                            label="IOU 임계값",
+                            info="높을수 겹침 감지가 엄격해집니다"
                         )
                         conf_threshold_slider = gr.Slider(
                             0.1, 0.9, 0.25,
-                            label="Confidence Threshold",
-                            info="Higher = more confident detections"
+                            label="신뢰도 임계값",
+                            info="높을수록 신뢰도가 높은 탐지만 표시됩니다"
                         )
 
-                    with gr.Tab("Size Filters"):
+                    with gr.Tab("크기 필터"):
                         min_area_percentile_slider = gr.Slider(
                             0, 10, 1,
-                            label="Min Size Percentile",
-                            info="Filter out smaller colonies (1 means smallest 1% filtered)"
+                            label="최소 크기 백분위수",
+                            info="작은 콜로니를 필터링합니다 (1은 가장 작은 1% 필터링)"
                         )
                         max_area_percentile_slider = gr.Slider(
                             90, 100, 99,
-                            label="Max Size Percentile",
-                            info="Filter out larger objects (99 means largest 1% filtered)"
+                            label="최대 크기 백분위수",
+                            info="큰 객체를 필터링합니다 (99는 가장 큰 1% 필터링)"
                         )
 
-                    with gr.Tab("Shape Filters"):
+                    with gr.Tab("형태 필터"):
                         circularity_threshold_slider = gr.Slider(
                             0.0, 1.0, 0.8,
-                            label="Circularity Threshold",
-                            info="Set a threshold to detect only circular colonies (1 = perfect circle)"
+                            label="원형도 임계값",
+                            info="원형에 가까운 콜로니만 감지하도록 설정합니다 (1 = 완벽한 원)"
                         )
 
             with gr.Column(scale=1):
                 output_image = gr.Image(
-                    label="Analysis Result",
+                    label="분석 결과",
                     type="numpy",
                     interactive=True,
                     elem_classes="output-image"
                 )
                 colony_count_text = gr.Textbox(
-                    label="Count Result",
+                    label="카운트 결과",
                     lines=3,
                     elem_classes="result-text"
+                )
+                save_path_text = gr.Textbox(
+                    label="저장 위치",
+                    value=f"결과가 저장된 위치: {counter.image_manager.base_path}",
+                    lines=1,
+                    interactive=False
                 )
 
                 with gr.Row():
                     with gr.Column(scale=1):
                         remove_mode_button = gr.Button(
-                            "🔄 Toggle Edit Mode",
+                            "🔄 편집 모드 전환",
                             variant="secondary"
                         )
                         remove_mode_text = gr.Textbox(
-                            label="Current Mode",
-                            value="🟢 Add Mode",
+                            label="현재 모드",
+                            value="🟢 추가 모드",
                             lines=1
                         )
                     with gr.Column(scale=1):
                         remove_point_button = gr.Button(
-                            "↩️ Undo Last Point",
+                            "↩️ 최근 포인트 제거",
                             variant="secondary"
                         )
 
@@ -456,18 +726,18 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                 """
                 ### 📝 빠른 가이드
                 1. **이미지 업로드**: 분석할 콜로니 이미지를 업로드하세요.
-                2. **분석 방법 선택**: FastSAM - AI 기반 탐지 방식을 사용합니다.
-                3. **이미지 분석**: Analyze Image 버튼을 눌러 이미지를 분석하세요.
+                2. **탐지 방법 선택**: FastSAM - AI 기반 탐지 방식을 사용합니다.
+                3. **이미지 분석**: "🔍 이미지 분석" 버튼을 눌러 이미지를 분석하세요.
                 4. **수동 수정**: 
                    - 👆 이미지를 클릭하여 누락된 콜로니를 추가하세요.
-                   - 🔄 'Toggle Edit Mode' 버튼을 사용하여 추가/제거 모드를 전환하세요.
-                   - ↩️ 'Undo Last Point' 버튼을 사용하여 최근 추가된 포인트를 제거하세요.
+                   - 🔄 "편집 모드 전환" 버튼을 사용하여 추가/제거 모드를 전환하세요.
+                   - ↩️ "최근 포인트 제거" 버튼을 사용하여 최근 추가된 포인트를 제거하세요.
                 5. **분석 설정 조정**:
-                   - **Input Size**: 입력 이미지 크기를 설정하세요 (크면 정확도 증가, 속도 감소).
-                   - **IOU Threshold**: 겹침에 대한 민감도를 설정하세요 (높을수록 겹침이 엄격하게 판단됨).
-                   - **Confidence Threshold**: 탐지 신뢰도를 설정하세요 (높을수록 신뢰도가 높은 탐지만 표시됨).
-                   - **Min/Max Size Percentile**: 크기 필터를 설정하여 너무 작거나 큰 콜로니를 필터링합니다.
-                   - **Circularity Threshold**: 원형도 필터를 설정하여 원형에 가까운 콜로니만 탐지합니다.
+                   - **입력 크기**: 입력 이미지 크기를 설정하세요 (크면 정확도 증가, 속 감소).
+                   - **IOU 임계값**: 겹침에 대한 민감도를 설정하세요 (높을수록 겹침이 엄격하게 판단됨).
+                   - **신뢰도 임계값**: 탐지 신뢰도를 설정하세요 (높을수록 신뢰도가 높은 탐지만 표시됨).
+                   - **최소/최대 크기 백분위수**: 크기 필터를 설정하여 너무 작거나 큰 콜로니를 필터링합니다.
+                   - **원형도 임계값**: 원형도 필터를 설정하여 원형에 가까운 콜로니만 탐지합니다.
                 """
             )
 
@@ -508,5 +778,24 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
         outputs=[output_image, remove_mode_text]
     )
 
+    # 저장 관련 UI 추가
+    with gr.Row():
+        save_button = gr.Button(
+            "💾 최종 결과 저장",
+            variant="primary"
+        )
+        save_result_text = gr.Textbox(
+            label="저장 결과",
+            lines=1
+        )
+
+    # 이벤트 핸들러에 저장 버튼 이벤트 추가
+    save_button.click(
+        counter.save_final_results,
+        inputs=[],
+        outputs=[save_result_text]
+    )
+
 # 앱 실행
-demo.launch()
+if __name__ == "__main__":
+    demo.launch()
