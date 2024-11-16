@@ -38,5 +38,6 @@ interactive-sam-control-panel/
 └── requirements.txt
 ```
 
+![Interactive SAM Control Panel 2024-11-17 07-46-02](https://github.com/user-attachments/assets/2494d7d4-233e-4958-bf19-7fca36c7fdf3)
 
 
