@@ -17,8 +17,26 @@
 
 ## Installation
 
-### 1. Clone the Repository
-
 ```bash
-git clone https://github.com/yourusername/interactive-sam-control-panel.git
-cd interactive-sam-control-panel
+pip install PyQt5
+pip install segment-anything
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install opencv-python
+pip install matplotlib
+pip install Pillow
+pip install numpy
+```
+
+```
+interactive-sam-control-panel/
+├── sam_v41.py
+├── sam_vit_b_01ec64.pth
+├── results/
+│   ├── result_YYYYMMDD_HHMMSS.png
+│   └── analysis_YYYYMMDD_HHMMSS.json
+├── README.md
+└── requirements.txt
+```
+
+
+
