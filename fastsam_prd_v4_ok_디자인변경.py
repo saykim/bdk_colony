@@ -481,6 +481,9 @@ def segment_and_count_colonies(
         counter.reset()
         counter.set_original_image(input_image)
         image_to_use = input_image
+        
+        # 원본 이미지 크기 저장
+        original_width, original_height = image_to_use.size
 
         # 이미지 크기 조정 (비율 유지)
         w, h = image_to_use.size
@@ -552,11 +555,25 @@ def segment_and_count_colonies(
 
         progress(1.0, desc="완료!")
         img_with_points = counter.draw_points()
-        return img_with_points, counter.get_count_text()
+        
+        # 결과 이미지를 원본 크기로 다시 조정
+        img_with_points_pil = Image.fromarray(img_with_points)
+        try:
+            # PIL 9.0.0 이상
+            resampling_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            # PIL 9.0.0 미만
+            resampling_filter = Image.LANCZOS
+        img_with_points_resized = img_with_points_pil.resize((original_width, original_height), resampling_filter)
+        
+        return np.array(img_with_points_resized), counter.get_count_text()
     except Exception as e:
         error_msg = f"분석 중 오류가 발생했습니다: {str(e)}"
         print(error_msg)
-        return np.array(preprocessed_image), error_msg
+        # 오류 발생 시 원본 이미지 반환
+        if input_image is not None:
+            return np.array(input_image), error_msg
+        return None, error_msg
 
 def save_results(original_image, processed_image):
     """
@@ -857,6 +874,19 @@ body {
     transition: all 0.3s ease !important;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
     margin: 15px 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: 1/1 !important;
+    object-fit: contain !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+}
+
+.input-image img, .output-image img {
+    max-width: 100% !important;
+    max-height: 100% !important;
+    object-fit: contain !important;
 }
 
 .input-image:hover, .output-image:hover {
@@ -1039,12 +1069,14 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
     with gr.Tabs():
         with gr.Tab("단일 이미지 처리"):
             with gr.Row():
-                with gr.Column(scale=6, min_width=300):
+                with gr.Column(scale=5, min_width=300):
                     gr.Markdown("<div class='section-title'>📁 이미지 업로드</div>")
                     input_image = gr.Image(
                         type="pil",
                         elem_classes=["input-image"],
-                        show_label=False
+                        show_label=False,
+                        height=500,  # 고정 높이 설정
+                        width=500    # 고정 너비 설정
                     )
 
                     # 이미지 전처리 설정
@@ -1161,13 +1193,15 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                             info="대략적으로 원형인 CFU만 감지합니다 (1 = 완벽한 원)."
                         )
 
-                with gr.Column(scale=4, min_width=300):
+                with gr.Column(scale=5, min_width=300):
                     gr.Markdown("<div class='section-title'>📊 분석 결과</div>")
                     output_image = gr.Image(
                         type="numpy",
                         interactive=True,
                         elem_classes=["output-image"],
-                        show_label=False
+                        show_label=False,
+                        height=500,  # 고정 높이 설정
+                        width=500    # 고정 너비 설정
                     )
                     colony_count_text = gr.Textbox(
                         label="카운트 결과",
@@ -1246,7 +1280,13 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                     if max(w, h) > max_size:
                         scale = max_size / max(w, h)
                         new_w, new_h = int(w * scale), int(h * scale)
-                        image = image.resize((new_w, new_h), Image.LANCZOS)
+                        try:
+                            # PIL 9.0.0 이상
+                            resampling_filter = Image.Resampling.LANCZOS
+                        except AttributeError:
+                            # PIL 9.0.0 미만
+                            resampling_filter = Image.LANCZOS
+                        image = image.resize((new_w, new_h), resampling_filter)
                     
                     # 이미지 히스토리에 저장
                     processed_image = image_history.set_original(image)
