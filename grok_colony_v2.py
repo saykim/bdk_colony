@@ -465,8 +465,8 @@ with gr.Blocks(theme=gr.themes.Default(), css=css) as demo:
                     undo_btn = gr.Button("실행 취소", variant="secondary", elem_classes="button-secondary")
             
             # FastSAM 분석 설정 추가
-            with gr.Accordion("⚙️ 분석 설정 [배양 접시 필터링 활성화됨]", elem_id="analysis_accordion", open=False, elem_classes="accordion-header") as analysis_accordion:
-                analysis_setting_title = gr.Markdown("FastSAM AI 모델의 파라미터를 조정하여 CFU 감지 결과를 최적화할 수 있습니다.")
+            with gr.Accordion("⚙️ 분석 설정", open=True) as analysis_accordion:
+                accordion_label = gr.Textbox(visible=False, value="⚙️ 분석 설정")
                 
                 with gr.Tab("일반"):
                     input_size_slider = gr.Slider(
@@ -635,19 +635,6 @@ with gr.Blocks(theme=gr.themes.Default(), css=css) as demo:
         save_results,
         inputs=[input_image, output_image],
         outputs=save_output
-    )
-    
-    # 배양 접시 필터링 상태에 따라 제목 업데이트
-    def update_title(is_enabled):
-        if is_enabled:
-            return "⚙️ 분석 설정 <span class='filtering-active'>배양 접시 필터링 중</span>"
-        else:
-            return "⚙️ 분석 설정"
-    
-    use_dish_filtering_checkbox.change(
-        update_title,
-        inputs=[use_dish_filtering_checkbox],
-        outputs=[analysis_accordion]
     )
 
 if __name__ == "__main__":
