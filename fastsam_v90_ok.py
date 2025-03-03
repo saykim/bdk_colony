@@ -90,6 +90,7 @@ class ColonyCounter:
         - auto_detected_count: 자동 감지된 콜로니 수
         - remove_mode: 포인트 제거 모드 여부
         - last_method: 마지막으로 사용된 감지 방법
+        - scale_factor: 이미지 리사이징 비율 저장 변수 추가
         """
         self.manual_points = []
         self.auto_points = []
@@ -97,7 +98,8 @@ class ColonyCounter:
         self.auto_detected_count = 0
         self.remove_mode = False
         self.original_image = None
-        self.last_method = None
+        self.last_method = "NONE"
+        self.scale_factor = 1.0  # 이미지 리사이징 비율 저장 변수 추가
 
     def reset(self):
         self.manual_points = []
@@ -106,7 +108,8 @@ class ColonyCounter:
         self.auto_detected_count = 0
         self.remove_mode = False
         self.original_image = None
-        self.last_method = None
+        self.last_method = "NONE"
+        self.scale_factor = 1.0  # 리셋 시 scale_factor도 초기화
 
     def set_original_image(self, image):
         self.original_image = np.array(image)
@@ -117,15 +120,20 @@ class ColonyCounter:
         mode_text = "🔴 Remove Mode" if self.remove_mode else "🟢 Add Mode"
         return img_with_points, mode_text
 
-    def find_closest_point(self, x, y, threshold=20):
+    def find_closest_point(self, x, y, threshold=50):
         # 자동 포인트와 수동 포인트 모두에서 가장 가까운 점 찾기
         all_points = self.auto_points + self.manual_points
         if not all_points:
             return None, None
+        
+        # 클릭 좌표는 UI 좌표계, 저장된 포인트는 리사이즈된 이미지 좌표계
+        # 따라서 클릭 좌표를 리사이즈된 이미지 좌표계로 변환
+        scaled_x = x / self.scale_factor
+        scaled_y = y / self.scale_factor
 
         distances = []
         for idx, (px, py) in enumerate(all_points):
-            dist = np.sqrt((x - px) ** 2 + (y - py) ** 2)
+            dist = np.sqrt((scaled_x - px) ** 2 + (scaled_y - py) ** 2)
             distances.append((dist, idx))
 
         if not distances:
@@ -138,24 +146,91 @@ class ColonyCounter:
             return closest_idx, is_auto
         return None, None
 
+    def debug_find_closest(self, x, y, threshold=50):
+        """디버깅용 함수: 가장 가까운 포인트 찾기 과정을 자세히 출력"""
+        all_points = self.auto_points + self.manual_points
+        if not all_points:
+            print("포인트가 없습니다.")
+            return None, None
+        
+        # 클릭 좌표는 UI 좌표계, 저장된 포인트는 리사이즈된 이미지 좌표계
+        # 따라서 클릭 좌표를 리사이즈된 이미지 좌표계로 변환
+        scaled_x = x / self.scale_factor
+        scaled_y = y / self.scale_factor
+        print(f"클릭 좌표: ({x}, {y}) -> 변환 좌표: ({scaled_x}, {scaled_y})")
+        print(f"스케일 팩터: {self.scale_factor}")
+        
+        if len(self.auto_points) > 0:
+            print(f"자동 포인트 개수: {len(self.auto_points)}")
+            for i, (px, py) in enumerate(self.auto_points[:5]):
+                dist = np.sqrt((scaled_x - px) ** 2 + (scaled_y - py) ** 2)
+                print(f"  자동 포인트 {i}: ({px}, {py}), 거리: {dist}")
+            if len(self.auto_points) > 5:
+                print(f"  ... 외 {len(self.auto_points)-5}개")
+        
+        if len(self.manual_points) > 0:
+            print(f"수동 포인트 개수: {len(self.manual_points)}")
+            for i, (px, py) in enumerate(self.manual_points[:5]):
+                dist = np.sqrt((scaled_x - px) ** 2 + (scaled_y - py) ** 2)
+                print(f"  수동 포인트 {i}: ({px}, {py}), 거리: {dist}")
+            if len(self.manual_points) > 5:
+                print(f"  ... 외 {len(self.manual_points)-5}개")
+
+        distances = []
+        for idx, (px, py) in enumerate(all_points):
+            dist = np.sqrt((scaled_x - px) ** 2 + (scaled_y - py) ** 2)
+            distances.append((dist, idx))
+
+        if not distances:
+            print("거리 계산 결과가 없습니다.")
+            return None, None
+
+        closest_dist, closest_idx = min(distances, key=lambda item: item[0])
+        print(f"가장 가까운 포인트 인덱스: {closest_idx}, 거리: {closest_dist}")
+        print(f"임계값: {threshold}")
+        
+        if closest_dist < threshold:
+            is_auto = (closest_idx < len(self.auto_points))
+            type_str = "자동" if is_auto else "수동"
+            print(f"선택된 포인트: {type_str} 포인트 {closest_idx}, 임계값 범위 내에 있음")
+            return closest_idx, is_auto
+        else:
+            print(f"가장 가까운 포인트도 임계값보다 멀리 있습니다.")
+        return None, None
+
     def add_or_remove_point(self, image, evt: gr.SelectData):
         try:
             if self.current_image is None and image is not None:
                 self.current_image = np.array(image)
 
             x, y = evt.index
+            print(f"클릭 좌표: ({x}, {y}), 스케일 팩터: {self.scale_factor}")
 
             if self.remove_mode:
+                # 일반 find_closest_point 대신 debug 버전을 사용 (문제 진단 시)
+                # closest_idx, is_auto = self.debug_find_closest(x, y)
+                
                 closest_idx, is_auto = self.find_closest_point(x, y)
                 if closest_idx is not None:
                     if is_auto:
+                        point = self.auto_points[closest_idx]
+                        print(f"제거할 자동 포인트 {closest_idx}: ({point[0]}, {point[1]})")
                         self.auto_points.pop(closest_idx)
                         self.auto_detected_count -= 1
                     else:
                         manual_idx = closest_idx - len(self.auto_points)
+                        point = self.manual_points[manual_idx]
+                        print(f"제거할 수동 포인트 {manual_idx}: ({point[0]}, {point[1]})")
                         self.manual_points.pop(manual_idx)
+                else:
+                    print(f"가까운 포인트를 찾을 수 없습니다. 임계값 범위 내에 없음.")
             else:
-                self.manual_points.append((x, y))
+                # 수동 포인트 추가 시에도 좌표계 변환 필요
+                # UI 좌표를 리사이즈된 이미지 좌표로 변환
+                scaled_x = x / self.scale_factor
+                scaled_y = y / self.scale_factor
+                self.manual_points.append((scaled_x, scaled_y))
+                print(f"수동 포인트 추가: UI 좌표({x}, {y}) -> 변환 좌표({scaled_x}, {scaled_y})")
 
             img_with_points = self.draw_points()
             return img_with_points, self.get_count_text()
@@ -176,7 +251,7 @@ class ColonyCounter:
 
     def get_count_text(self):
         try:
-            method_text = f"Method: {self.last_method}\n" if self.last_method else ""
+            method_text = f"Method: {self.last_method}\n" if self.last_method != "NONE" else ""
             total = self.auto_detected_count + len(self.manual_points)
             return (f"{method_text}Total Colony Count: {total}\n"
                     f"🤖 Auto detected: {self.auto_detected_count}\n"
@@ -252,11 +327,15 @@ class ColonyCounter:
             # 1. 자동 감지된 콜로니 번호 표시
             ###########################################
             for idx, (x, y) in enumerate(self.auto_points, 1):
+                # 저장된 좌표(리사이즈된 이미지 기준)를 UI 좌표로 변환
+                ui_x = int(x * self.scale_factor)
+                ui_y = int(y * self.scale_factor)
+                
                 text = str(idx)
                 # 텍스트 크기 계산하여 중앙 정렬
                 (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-                text_x = int(x - text_width / 2)
-                text_y = int(y - 10)
+                text_x = int(ui_x - text_width / 2)
+                text_y = int(ui_y - 10)
 
                 # [중요] 8방향 검은색 외곽선으로 텍스트 가시성 향상
                 # dx, dy로 8방향의 오프셋을 지정하여 외곽선 생성
@@ -274,9 +353,13 @@ class ColonyCounter:
             # 2. 수동으로 추가된 포인트 표시
             ###########################################
             for idx, (x, y) in enumerate(self.manual_points, len(self.auto_points) + 1):
+                # 저장된 좌표(리사이즈된 이미지 기준)를 UI 좌표로 변환
+                ui_x = int(x * self.scale_factor)
+                ui_y = int(y * self.scale_factor)
+                
                 # 사각형 좌표 계산
-                pt1 = (int(x - square_size / 2), int(y - square_size / 2))
-                pt2 = (int(x + square_size / 2), int(y + square_size / 2))
+                pt1 = (int(ui_x - square_size / 2), int(ui_y - square_size / 2))
+                pt2 = (int(ui_x + square_size / 2), int(ui_y + square_size / 2))
                 
                 # [중요] 반투명 사각형 그리기
                 cv2.rectangle(overlay, pt1, pt2, MANUAL_RECT_COLOR, -1)  # 색상 채우기
@@ -285,8 +368,8 @@ class ColonyCounter:
                 # 번호 텍스트 추가
                 text = str(idx)
                 (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-                text_x = int(x - text_width / 2)
-                text_y = int(y - 10)
+                text_x = int(ui_x - text_width / 2)
+                text_y = int(ui_y - 10)
 
                 # 8방향 검은색 외곽선
                 for dx, dy in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
@@ -437,6 +520,9 @@ def segment_and_count_colonies(
         scale = input_size / max(w, h)
         new_w, new_h = int(w * scale), int(h * scale)
         input_resized = input_image.resize((new_w, new_h))
+        
+        # 스케일 비율 저장
+        new_counter.scale_factor = scale
 
         # FastSAM 모델 예측
         input_array = np.array(input_resized)
@@ -1084,7 +1170,8 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                 counter.auto_detected_count = new_counter.auto_detected_count
                 counter.current_image = new_counter.current_image
                 counter.original_image = new_counter.original_image
-                counter.last_method = "AI Detection"
+                counter.last_method = new_counter.last_method
+                counter.scale_factor = new_counter.scale_factor
 
             return processed_image, count_text
         except Exception as e:

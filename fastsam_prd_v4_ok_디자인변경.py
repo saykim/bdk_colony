@@ -90,25 +90,36 @@ image_history = ImagePreprocessHistory()
 
 class ColonyCounter:
     def __init__(self):
-        self.manual_points = []  # 수동으로 추가된 포인트 리스트
-        self.auto_points = []    # 자동으로 감지된 CFU 중심점 리스트
+        """
+        콜로니 카운터 초기화
+        """
         self.current_image = None
-        self.auto_detected_count = 0
-        self.remove_mode = False
+        self.auto_points = []  # 자동 감지된 포인트 (x, y) 좌표 리스트
+        self.manual_points = []  # 수동으로 추가된 포인트 (x, y) 좌표 리스트
+        self.auto_detected_count = 0  # 자동 감지된 콜로니 수
+        self.remove_mode = False  # 제거 모드 여부
+        self.last_method = ""  # 마지막으로 사용된 방법
         self.original_image = None
-        self.last_method = None
         self.zoom_factor = 1.0  # 확대/축소 비율
+        self.colony_masks = []  # 콜로니 마스크 리스트
+        self.dish_mask = None  # 배양접시 마스크
+        self.original_processed_image = None  # 원본 처리된 이미지 (세그멘테이션 포함)
 
     def reset(self):
-        """카운터 초기화"""
-        self.manual_points = []
-        self.auto_points = []  # 자동 포인트 초기화
+        """
+        카운터 초기화
+        """
         self.current_image = None
+        self.auto_points = []
+        self.manual_points = []
         self.auto_detected_count = 0
         self.remove_mode = False
         self.original_image = None
         self.last_method = None
         self.zoom_factor = 1.0  # 확대/축소 비율 초기화
+        self.colony_masks = []  # 콜로니 마스크 초기화
+        self.dish_mask = None  # 배양접시 마스크 초기화
+        self.original_processed_image = None  # 원본 처리된 이미지 초기화
 
     def set_original_image(self, image):
         """
@@ -117,7 +128,12 @@ class ColonyCounter:
         Args:
             image (PIL.Image): 원본 이미지
         """
-        self.original_image = np.array(image)
+        if image is not None:
+            self.original_image = image
+            if isinstance(image, Image.Image):
+                self.original_image = np.array(image)
+            else:
+                self.original_image = image.copy()
 
     def toggle_remove_mode(self):
         """편집 모드 전환 (추가/제거 모드)"""
@@ -125,6 +141,19 @@ class ColonyCounter:
         img_with_points = self.draw_points()
         mode_text = "🔴 REMOVE MODE" if self.remove_mode else "🟢 ADD MODE"
         return img_with_points, mode_text
+
+    def set_segmentation_data(self, colony_masks, dish_mask, processed_image):
+        """
+        세그멘테이션 데이터 설정
+        
+        Args:
+            colony_masks (list): 콜로니 마스크 리스트
+            dish_mask (torch.Tensor): 배양접시 마스크
+            processed_image (numpy.ndarray): 처리된 이미지
+        """
+        self.colony_masks = colony_masks
+        self.dish_mask = dish_mask
+        self.original_processed_image = processed_image.copy() if processed_image is not None else None
 
     def add_or_remove_point(self, image, evt: gr.SelectData):
         """
@@ -150,12 +179,20 @@ class ColonyCounter:
                 removed = False
 
                 if closest_auto is not None:
+                    # 자동 포인트와 해당 마스크 제거
                     self.auto_points.pop(closest_auto)
+                    if closest_auto < len(self.colony_masks):
+                        self.colony_masks.pop(closest_auto)
                     self.auto_detected_count = len(self.auto_points)
                     removed = True
                 elif closest_manual is not None:
+                    # 수동 포인트 제거
                     self.manual_points.pop(closest_manual)
                     removed = True
+
+                if removed:
+                    # 세그멘테이션 이미지 다시 그리기
+                    self.redraw_segmentation()
 
                 if not removed:
                     print("제거할 포인트가 충분히 가까이 있지 않습니다.")
@@ -168,6 +205,40 @@ class ColonyCounter:
         except Exception as e:
             print(f"포인트 추가/제거 중 오류 발생: {str(e)}")
             return image, self.get_count_text()
+
+    def redraw_segmentation(self):
+        """
+        세그멘테이션 이미지 다시 그리기
+        """
+        if self.original_image is None or self.original_processed_image is None:
+            return
+            
+        # 원본 이미지 복사
+        image_np = np.array(self.original_image).copy()
+        
+        # 콜로니 마스크 처리
+        for mask in self.colony_masks:
+            mask_np = mask.cpu().numpy()
+            if mask_np.ndim == 2:
+                mask_np = mask_np > 0
+                # 랜덤 색상 적용
+                color = np.random.randint(100, 200, (3,)).tolist()
+                image_np[mask_np] = color
+                
+                # 윤곽선 그리기
+                contours, _ = cv2.findContours(mask_np.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(image_np, contours, -1, (255, 0, 0), 2)
+        
+        # 배양접시 마스크 처리
+        if self.dish_mask is not None:
+            dish_mask_np = self.dish_mask.cpu().numpy()
+            if dish_mask_np.ndim == 2:
+                dish_mask_np = dish_mask_np > 0
+                contours, _ = cv2.findContours(dish_mask_np.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(image_np, contours, -1, (0, 0, 255), 3)
+        
+        # 현재 이미지 업데이트
+        self.current_image = image_np
 
     def find_closest_point(self, x, y, points, threshold=20):
         """
@@ -245,7 +316,7 @@ class ColonyCounter:
 
             img_with_points = self.current_image.copy()
             overlay = np.zeros_like(img_with_points)
-            square_size = 30  # 25에서 30으로 20% 증가
+            square_size = 40  # 30에서 40으로 증가
 
             # 글꼴 설정
             font = cv2.FONT_HERSHEY_SIMPLEX
@@ -272,32 +343,37 @@ class ColonyCounter:
                           (text_x, text_y),
                           font, font_scale, (255, 0, 0), font_thickness)
 
-            # 수동으로 추가된 포인트 사각형 그리기 (빨간색)
+            # 수동으로 추가된 포인트 사각형 그리기 (더 선명한 빨간색)
             for x, y in self.manual_points:
                 pt1 = (int(x - square_size / 2), int(y - square_size / 2))
                 pt2 = (int(x + square_size / 2), int(y + square_size / 2))
                 cv2.rectangle(overlay, pt1, pt2, (0, 0, 255), -1)  # 빨간색 사각형
+                # 테두리 추가
+                cv2.rectangle(img_with_points, pt1, pt2, (255, 255, 255), 2)  # 흰색 테두리
 
-            # 오버레이 적용
-            cv2.addWeighted(overlay, 0.4, img_with_points, 1.0, 0, img_with_points)
+            # 오버레이 적용 (투명도 증가)
+            cv2.addWeighted(overlay, 0.6, img_with_points, 1.0, 0, img_with_points)
 
-            # 수동 포인트 번호 표시 (파란색)
+            # 수동 포인트 번호 표시 (더 눈에 띄는 색상)
+            manual_font_scale = 1.0  # 폰트 크기 증가
+            manual_font_thickness = 2  # 폰트 두께 증가
+            
             for idx, (x, y) in enumerate(self.manual_points, len(self.auto_points) + 1):
                 text = str(idx)
-                (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
+                (text_width, text_height), _ = cv2.getTextSize(text, font, manual_font_scale, manual_font_thickness)
                 text_x = int(x - text_width / 2)
-                text_y = int(y - 10)
+                text_y = int(y - 15)  # 텍스트 위치 약간 위로 조정
 
-                # 하얀색 외곽선
-                for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                # 검은색 외곽선 (더 두껍게)
+                for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1), (0, -2), (0, 2), (-2, 0), (2, 0)]:
                     cv2.putText(img_with_points, text,
                               (text_x + dx, text_y + dy),
-                              font, font_scale, (255, 255, 255), outline_thickness)
+                              font, manual_font_scale, (0, 0, 0), outline_thickness)
 
-                # 파란색 텍스트
+                # 노란색 텍스트 (더 눈에 띄게)
                 cv2.putText(img_with_points, text,
                           (text_x, text_y),
-                          font, font_scale, (255, 0, 0), font_thickness)
+                          font, manual_font_scale, (255, 255, 0), manual_font_thickness)
 
             # 제거 모드 표시
             if self.remove_mode:
@@ -459,7 +535,7 @@ def segment_and_count_colonies(
 
     Args:
         input_image (PIL.Image): 전처리된 이미지
-        input_size (int, optional): 입력 이미지 크기. Defaults to 1024.
+        input_size (int, optional): 입력 크기. Defaults to 1024.
         iou_threshold (float, optional): IOU 임계값. Defaults to 0.7.
         conf_threshold (float, optional): 신뢰도 임계값. Defaults to 0.25.
         better_quality (bool, optional): 향상된 품질 여부. Defaults to False.
@@ -468,24 +544,19 @@ def segment_and_count_colonies(
         min_area_percentile (int, optional): 최소 면적 백분위수. Defaults to 1.
         max_area_percentile (int, optional): 최대 면적 백분위수. Defaults to 99.
         circularity_threshold (float, optional): 원형도 임계값. Defaults to 0.8.
-        progress (gr.Progress, optional): 진행 상황 표시. Defaults to gr.Progress().
+        progress (gr.Progress, optional): 진행 상태 표시기. Defaults to gr.Progress().
 
     Returns:
-        tuple: 분석된 이미지과 카운트 텍스트
+        tuple: 처리된 이미지와 카운트 텍스트
     """
     try:
         if input_image is None:
-            return None, "이미지를 선택해주세요."
+            return None, "이미지를 업로드해주세요."
 
-        progress(0.1, desc="초기화 중...")
-        counter.reset()
-        counter.set_original_image(input_image)
+        progress(0.1, desc="이미지 준비 중...")
+        # 이미지 크기 조정
         image_to_use = input_image
-        
-        # 원본 이미지 크기 저장
         original_width, original_height = image_to_use.size
-
-        # 이미지 크기 조정 (비율 유지)
         w, h = image_to_use.size
         scale = input_size / max(w, h)
         new_w, new_h = int(w * scale), int(h * scale)
@@ -538,6 +609,12 @@ def segment_and_count_colonies(
             withContours=withContours
         )
 
+        # 원본 이미지 저장
+        counter.set_original_image(input_resized)
+        
+        # 세그멘테이션 데이터 저장
+        counter.set_segmentation_data(colony_annotations, dish_annotation, np.array(fig))
+        
         counter.current_image = np.array(fig)
         counter.auto_detected_count = len(colony_annotations)
 
