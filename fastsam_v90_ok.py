@@ -120,16 +120,15 @@ class ColonyCounter:
         mode_text = "🔴 Remove Mode" if self.remove_mode else "🟢 Add Mode"
         return img_with_points, mode_text
 
-    def find_closest_point(self, x, y, threshold=50):
+    def find_closest_point(self, x, y, threshold=30):
         # 자동 포인트와 수동 포인트 모두에서 가장 가까운 점 찾기
         all_points = self.auto_points + self.manual_points
         if not all_points:
             return None, None
         
-        # 클릭 좌표는 UI 좌표계, 저장된 포인트는 리사이즈된 이미지 좌표계
-        # 따라서 클릭 좌표를 리사이즈된 이미지 좌표계로 변환
-        scaled_x = x / self.scale_factor
-        scaled_y = y / self.scale_factor
+        # 클릭 좌표는 이미 UI 좌표계이므로, 비교를 위해 원본 이미지 좌표계로 변환할 필요 없음
+        scaled_x = x
+        scaled_y = y
 
         distances = []
         for idx, (px, py) in enumerate(all_points):
@@ -146,17 +145,16 @@ class ColonyCounter:
             return closest_idx, is_auto
         return None, None
 
-    def debug_find_closest(self, x, y, threshold=50):
+    def debug_find_closest(self, x, y, threshold=30):
         """디버깅용 함수: 가장 가까운 포인트 찾기 과정을 자세히 출력"""
         all_points = self.auto_points + self.manual_points
         if not all_points:
             print("포인트가 없습니다.")
             return None, None
         
-        # 클릭 좌표는 UI 좌표계, 저장된 포인트는 리사이즈된 이미지 좌표계
-        # 따라서 클릭 좌표를 리사이즈된 이미지 좌표계로 변환
-        scaled_x = x / self.scale_factor
-        scaled_y = y / self.scale_factor
+        # 클릭 좌표는 이미 UI 좌표계이므로, 비교를 위해 원본 이미지 좌표계로 변환할 필요 없음
+        scaled_x = x
+        scaled_y = y
         print(f"클릭 좌표: ({x}, {y}) -> 변환 좌표: ({scaled_x}, {scaled_y})")
         print(f"스케일 팩터: {self.scale_factor}")
         
@@ -225,12 +223,9 @@ class ColonyCounter:
                 else:
                     print(f"가까운 포인트를 찾을 수 없습니다. 임계값 범위 내에 없음.")
             else:
-                # 수동 포인트 추가 시에도 좌표계 변환 필요
-                # UI 좌표를 리사이즈된 이미지 좌표로 변환
-                scaled_x = x / self.scale_factor
-                scaled_y = y / self.scale_factor
-                self.manual_points.append((scaled_x, scaled_y))
-                print(f"수동 포인트 추가: UI 좌표({x}, {y}) -> 변환 좌표({scaled_x}, {scaled_y})")
+                # 클릭 좌표를 직접 사용 (변환 없음)
+                self.manual_points.append((x, y))
+                print(f"수동 포인트 추가: ({x}, {y}) (UI 좌표계)")
 
             img_with_points = self.draw_points()
             return img_with_points, self.get_count_text()
@@ -327,15 +322,15 @@ class ColonyCounter:
             # 1. 자동 감지된 콜로니 번호 표시
             ###########################################
             for idx, (x, y) in enumerate(self.auto_points, 1):
-                # 저장된 좌표(리사이즈된 이미지 기준)를 UI 좌표로 변환
-                ui_x = int(x * self.scale_factor)
-                ui_y = int(y * self.scale_factor)
+                # 좌표는 이미 원본 이미지 좌표계이므로 현재 화면 크기에 맞게 직접 표시
+                display_x = x
+                display_y = y
                 
                 text = str(idx)
                 # 텍스트 크기 계산하여 중앙 정렬
                 (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-                text_x = int(ui_x - text_width / 2)
-                text_y = int(ui_y - 10)
+                text_x = int(display_x - text_width / 2)
+                text_y = int(display_y - 10)
 
                 # [중요] 8방향 검은색 외곽선으로 텍스트 가시성 향상
                 # dx, dy로 8방향의 오프셋을 지정하여 외곽선 생성
@@ -353,13 +348,13 @@ class ColonyCounter:
             # 2. 수동으로 추가된 포인트 표시
             ###########################################
             for idx, (x, y) in enumerate(self.manual_points, len(self.auto_points) + 1):
-                # 저장된 좌표(리사이즈된 이미지 기준)를 UI 좌표로 변환
-                ui_x = int(x * self.scale_factor)
-                ui_y = int(y * self.scale_factor)
+                # 좌표는 이미 원본 이미지 좌표계이므로 현재 화면 크기에 맞게 직접 표시
+                display_x = x
+                display_y = y
                 
                 # 사각형 좌표 계산
-                pt1 = (int(ui_x - square_size / 2), int(ui_y - square_size / 2))
-                pt2 = (int(ui_x + square_size / 2), int(ui_y + square_size / 2))
+                pt1 = (int(display_x - square_size / 2), int(display_y - square_size / 2))
+                pt2 = (int(display_x + square_size / 2), int(display_y + square_size / 2))
                 
                 # [중요] 반투명 사각형 그리기
                 cv2.rectangle(overlay, pt1, pt2, MANUAL_RECT_COLOR, -1)  # 색상 채우기
@@ -368,8 +363,8 @@ class ColonyCounter:
                 # 번호 텍스트 추가
                 text = str(idx)
                 (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-                text_x = int(ui_x - text_width / 2)
-                text_y = int(ui_y - 10)
+                text_x = int(display_x - text_width / 2)
+                text_y = int(display_y - 10)
 
                 # 8방향 검은색 외곽선
                 for dx, dy in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
@@ -570,6 +565,9 @@ def segment_and_count_colonies(
                     y_indices, x_indices = np.where(mask)
                     center_x = int(np.mean(x_indices))
                     center_y = int(np.mean(y_indices))
+                    
+                    # 리사이즈된 이미지 좌표를 UI 좌표계로 변환
+                    # UI 좌표계는 리사이즈된 이미지를 기준으로 함
                     new_counter.auto_points.append((center_x, center_y))
 
         if valid_colony_annotations:
