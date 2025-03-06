@@ -11,6 +11,9 @@ from pathlib import Path
 import json
 import sys
 import warnings
+import glob
+import platform
+import subprocess
 
 # FutureWarning 무시 (옵션, 권장하지 않음)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -32,9 +35,17 @@ device = torch.device(
     "mps" if torch.backends.mps.is_available() else "cpu"
 )
 
-def fast_process(colony_annotations, dish_annotation, image, mask_random_color, withContours):
+def fast_process(colony_annotations, dish_annotation, image, mask_random_color, withContours, original_size=None):
     """
     마스크 주석을 기반으로 이미지를 처리하고, 페트리 접시는 외곽선만 그리며 콜로니는 채우고 외곽선을 그립니다.
+    
+    Args:
+        colony_annotations: 콜로니 마스크 주석
+        dish_annotation: 페트리 접시 마스크 주석
+        image: 처리할 이미지
+        mask_random_color: 마스크에 랜덤 색상 적용 여부
+        withContours: 외곽선 표시 여부
+        original_size: 원본 이미지 크기 (width, height). None이면 리사이즈하지 않음
     """
     try:
         image_np = np.array(image).copy()
@@ -71,6 +82,11 @@ def fast_process(colony_annotations, dish_annotation, image, mask_random_color, 
                     cv2.drawContours(image_np, contours, -1, (0, 0, 255), 3)  # 빨간색 외곽선
 
         processed_image = Image.fromarray(image_np)
+        
+        # 원본 크기로 복원 (original_size가 제공된 경우)
+        if original_size is not None:
+            processed_image = processed_image.resize(original_size, Image.LANCZOS)
+            
         return processed_image
     except Exception as e:
         print(f"Error in fast_process: {str(e)}")
@@ -249,6 +265,7 @@ class ColonyCounter:
                         del self.manual_points[manual_idx]
             else:
                 # 일반 모드인 경우, 클릭 위치에 수동 포인트 추가
+                # 클릭 좌표는 이미 원본 이미지 좌표계로 전달되므로 변환 불필요
                 self.manual_points.append((x, y))
 
             # 포인트 반영한 이미지 다시 그리기
@@ -591,6 +608,9 @@ def segment_and_count_colonies(
         new_counter.set_original_image(input_image)
         new_counter.last_method = method.upper()
 
+        # 원본 이미지 크기 저장
+        original_size = input_image.size
+
         # 입력 이미지 리사이즈
         input_size = int(input_size)
         w, h = input_image.size
@@ -615,7 +635,10 @@ def segment_and_count_colonies(
         annotations = getattr(results[0].masks, 'data', None)
         if annotations is None or len(annotations) == 0:
             new_counter.current_image = np.array(input_resized)
-            return np.array(input_resized), "No colonies detected", new_counter
+            # 원본 크기로 복원
+            result_image = Image.fromarray(new_counter.current_image).resize(original_size)
+            new_counter.current_image = np.array(result_image)
+            return np.array(result_image), "No colonies detected", new_counter
 
         # 각 마스크 면적
         areas = [np.sum(ann.cpu().numpy() > 0) for ann in annotations]
@@ -648,9 +671,13 @@ def segment_and_count_colonies(
                     center_x = int(np.mean(x_indices))
                     center_y = int(np.mean(y_indices))
                     
-                    # 리사이즈된 이미지 좌표를 UI 좌표계로 변환
-                    # UI 좌표계는 리사이즈된 이미지를 기준으로 함
-                    new_counter.auto_points.append((center_x, center_y))
+                    # 리사이즈된 이미지 좌표를 원본 이미지 좌표로 변환
+                    # scale_factor는 리사이즈 비율이므로, 원본 좌표 = 리사이즈 좌표 / scale_factor
+                    original_center_x = int(center_x / scale)
+                    original_center_y = int(center_y / scale)
+                    
+                    # 원본 이미지 좌표계로 저장
+                    new_counter.auto_points.append((original_center_x, original_center_y))
 
         if valid_colony_annotations:
             processed_image = fast_process(
@@ -658,10 +685,14 @@ def segment_and_count_colonies(
                 dish_annotation=dish_annotation,
                 image=input_resized,
                 mask_random_color=mask_random_color,
-                withContours=withContours
+                withContours=withContours,
+                original_size=original_size
             )
         else:
             processed_image = input_resized
+            # 원본 크기로 복원
+            if original_size is not None:
+                processed_image = processed_image.resize(original_size)
 
         # counter 객체에 결과 반영
         if isinstance(processed_image, Image.Image):
@@ -1385,6 +1416,12 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                                 info="Filter larger objects"
                             )
 
+                    # 저장 기능 UI 추가
+                    with gr.Row():
+                        save_dir = gr.Textbox(label="저장 경로", placeholder="결과를 저장할 디렉토리 경로", value="")
+                        save_button = gr.Button("결과 저장", variant="primary")
+                    save_result_text = gr.Textbox(label="저장 결과", value="")
+
                 with gr.Column(scale=1):
                     gr.Markdown(
                         """<p class="image-label">🔬 Analysis Result</p>""",
@@ -1585,6 +1622,9 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
             return None, "No input image provided."
 
         try:
+            # 원본 이미지 크기 저장
+            original_image = input_image
+            
             # 이미지 크기 최적화
             if isinstance(input_image, Image.Image):
                 w, h = input_image.size
@@ -1664,6 +1704,36 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
         counter.undo_last_removal,
         inputs=[output_image],
         outputs=[output_image, colony_count_text]
+    )
+
+    # 이미지 저장 이벤트 핸들러 추가
+    def save_current_results(output_image, output_dir):
+        if output_image is None:
+            return "이미지가 없습니다. 먼저 이미지를 분석해주세요."
+        
+        if not output_dir or output_dir.strip() == "":
+            # 출력 디렉토리가 지정되지 않은 경우 기본 디렉토리 사용
+            output_dir = os.path.join(os.getcwd(), "results")
+        
+        # 디렉토리가 없으면 생성
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 현재 시간을 기준으로 파일명 생성
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"result_{timestamp}"
+        
+        try:
+            # ColonyCounter의 save_results 메서드 사용
+            save_result = counter.save_results(output_dir, filename)
+            return f"결과가 성공적으로 저장되었습니다: {save_result}"
+        except Exception as e:
+            return f"결과 저장 중 오류 발생: {str(e)}"
+
+    # 저장 버튼 이벤트 핸들러 연결
+    save_button.click(
+        save_current_results,
+        inputs=[output_image, save_dir],
+        outputs=[save_result_text]
     )
 
     # 배치 처리 이벤트
