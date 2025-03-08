@@ -259,144 +259,203 @@ def segment_and_count_colonies(
     device=device,                 # 장치 명시화 (GPU/CPU)
     progress=gr.Progress()
 ):
-    if input_image is None:
-        return None, "이미지를 선택해주세요."
-    
-    progress(0.1, desc="초기화 중...")
-    counter.reset()
-    counter.set_original_image(input_image)
-    
-    # 원본 이미지 크기 저장
-    original_width, original_height = input_image.size
-    
-    # 이미지 크기 조정 (비율 유지)
-    w, h = input_image.size
-    scale = input_size / max(w, h)
-    new_w, new_h = int(w * scale), int(h * scale)
-    input_resized = input_image.resize((new_w, new_h))
-    image_np = np.array(input_resized)
-
-    progress(0.3, desc="AI 분석 중...")
-    results = model.predict(
-        source=image_np,
-        device=device,
-        conf=conf_threshold,
-        iou=iou_threshold,
-        imgsz=input_size,
-        retina_masks=True
-    )
-
-    if not results[0].masks:
-        return image_np, "CFU가 감지되지 않았습니다."
-
-    progress(0.6, desc="결과 처리 중...")
-    processed_image = image_np.copy()
-    counter.auto_points = []
-
-    # 배양 접시 필터링 처리
-    dish_mask = None
-    dish_idx = -1
-    if use_dish_filtering:
-        progress(0.65, desc="배양 접시 감지 중...")
-        # 가장 큰 마스크를 배양 접시로 식별
-        annotations = results[0].masks.data
-        if len(annotations) > 0:
-            areas = [np.sum(ann.cpu().numpy()) for ann in annotations]
-            dish_idx = np.argmax(areas)
-            dish_annotation = annotations[dish_idx].cpu().numpy()
-            dish_mask = dish_annotation > 0
-            
-            # 배양 접시 윤곽선 시각화 (파란색)
-            dish_contours, _ = cv2.findContours(dish_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(processed_image, dish_contours, -1, (0, 0, 255), 2)
-
-    # 마스크 면적 계산 및 필터링
-    all_masks = []
-    all_areas = []
-    
-    for idx, mask in enumerate(results[0].masks.data):
-        mask_np = mask.cpu().numpy()
-        
-        # 배양 접시 필터링 적용
-        if use_dish_filtering and dish_mask is not None:
-            # 배양 접시인 경우 건너뛰기
-            if idx == dish_idx:
-                continue
-                
-            # 배양 접시 내부 여부 확인 (마스크 교집합)
-            overlap_ratio = np.sum(mask_np * dish_mask) / np.sum(mask_np)
-            if overlap_ratio < dish_overlap_threshold:
-                continue  # 배양 접시와 충분히 겹치지 않는 경우 건너뛰기
-        
-        contours, _ = cv2.findContours(mask_np.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            all_areas.append(area)
-            all_masks.append((mask_np, contour, area))
-    
-    # 면적 기준 필터링
-    if all_areas:
-        min_area = np.percentile(all_areas, min_area_percentile)
-        max_area = np.percentile(all_areas, max_area_percentile)
-    else:
-        min_area = 0
-        max_area = float('inf')
-    
-    # 향상된 품질 설정 적용
-    if better_quality:
-        # 더 정교한 윤곽선 그리기 (두께 조정)
-        contour_thickness = 2
-        # 더 선명한 색상 사용
-        color_min = 120 if better_quality else 100
-        color_max = 255 if better_quality else 200
-    else:
-        contour_thickness = 2
-        color_min = 100
-        color_max = 200
-    
-    # 필터링된 마스크 처리
-    for mask_np, contour, area in all_masks:
-        if min_area <= area <= max_area:
-            perimeter = cv2.arcLength(contour, True)
-            circularity = 4 * np.pi * (area / (perimeter ** 2)) if perimeter > 0 else 0
-            if perimeter > 0 and circularity >= circularity_threshold:
-                M = cv2.moments(contour)
-                if M["m00"] != 0:
-                    cX = int(M["m10"] / M["m00"])
-                    cY = int(M["m01"] / M["m00"])
-                    counter.auto_points.append((cX, cY))
-                    if draw_contours:
-                        color = tuple(np.random.randint(color_min, color_max, 3).tolist()) if mask_random_color else (0, 255, 0)
-                        cv2.drawContours(processed_image, [contour], -1, color, contour_thickness)
-
-    counter.auto_detected_count = len(counter.auto_points)
-    counter.current_image = processed_image
-
-    progress(1.0, desc="완료!")
-    img_with_points = counter.draw_points()
-    
-    # 결과 이미지를 원본 크기로 다시 조정
-    img_with_points_pil = Image.fromarray(img_with_points)
     try:
-        # PIL 9.0.0 이상
-        resampling_filter = Image.Resampling.LANCZOS
-    except AttributeError:
-        # PIL 9.0.0 미만
-        resampling_filter = Image.LANCZOS
-    img_with_points_resized = img_with_points_pil.resize((original_width, original_height), resampling_filter)
-    
-    return np.array(img_with_points_resized), counter.get_count_text()
+        if input_image is None:
+            return None, "이미지를 선택해주세요."
+        
+        progress(0.1, desc="초기화 중...")
+        counter.reset()
+        counter.set_original_image(input_image)
+        
+        # 원본 이미지 크기 저장
+        original_width, original_height = input_image.size
+        
+        # 이미지 크기 조정 (비율 유지)
+        w, h = input_image.size
+        scale = input_size / max(w, h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        
+        try:
+            input_resized = input_image.resize((new_w, new_h))
+        except Exception as e:
+            return np.array(input_image), f"이미지 리사이즈 오류: {str(e)}"
+            
+        image_np = np.array(input_resized)
+
+        progress(0.3, desc="AI 분석 중...")
+        try:
+            results = model.predict(
+                source=image_np,
+                device=device,
+                conf=conf_threshold,
+                iou=iou_threshold,
+                imgsz=input_size,
+                retina_masks=True
+            )
+        except Exception as e:
+            return image_np, f"AI 모델 분석 오류: {str(e)}"
+
+        if not results[0].masks:
+            return image_np, "CFU가 감지되지 않았습니다."
+
+        progress(0.6, desc="결과 처리 중...")
+        processed_image = image_np.copy()
+        counter.auto_points = []
+
+        # 배양 접시 필터링 처리
+        dish_mask = None
+        dish_idx = -1
+        if use_dish_filtering:
+            try:
+                progress(0.65, desc="배양 접시 감지 중...")
+                # 가장 큰 마스크를 배양 접시로 식별
+                annotations = results[0].masks.data
+                if len(annotations) > 0:
+                    areas = [np.sum(ann.cpu().numpy()) for ann in annotations]
+                    dish_idx = np.argmax(areas)
+                    dish_annotation = annotations[dish_idx].cpu().numpy()
+                    dish_mask = dish_annotation > 0
+                    
+                    # 배양 접시 윤곽선 시각화 (파란색)
+                    dish_contours, _ = cv2.findContours(dish_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(processed_image, dish_contours, -1, (0, 0, 255), 2)
+            except Exception as e:
+                print(f"배양 접시 필터링 오류: {str(e)}")
+                # 오류 발생 시에도 진행 - 접시 필터링 없이 계속 진행
+
+        # 마스크 면적 계산 및 필터링
+        all_masks = []
+        all_areas = []
+        
+        try:
+            for idx, mask in enumerate(results[0].masks.data):
+                mask_np = mask.cpu().numpy()
+                
+                # 배양 접시 필터링 적용
+                if use_dish_filtering and dish_mask is not None:
+                    # 배양 접시인 경우 건너뛰기
+                    if idx == dish_idx:
+                        continue
+                        
+                    # 배양 접시 내부 여부 확인 (마스크 교집합)
+                    overlap_ratio = np.sum(mask_np * dish_mask) / np.sum(mask_np)
+                    if overlap_ratio < dish_overlap_threshold:
+                        continue  # 배양 접시와 충분히 겹치지 않는 경우 건너뛰기
+                
+                contours, _ = cv2.findContours(mask_np.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    all_areas.append(area)
+                    all_masks.append((mask_np, contour, area))
+        except Exception as e:
+            print(f"마스크 처리 오류: {str(e)}")
+            if not all_masks:
+                return image_np, f"마스크 처리 중 오류 발생: {str(e)}"
+        
+        # 면적 기준 필터링
+        if all_areas:
+            min_area = np.percentile(all_areas, min_area_percentile)
+            max_area = np.percentile(all_areas, max_area_percentile)
+        else:
+            min_area = 0
+            max_area = float('inf')
+        
+        # 향상된 품질 설정 적용
+        if better_quality:
+            # 더 정교한 윤곽선 그리기 (두께 조정)
+            contour_thickness = 2
+            # 더 선명한 색상 사용
+            color_min = 120 if better_quality else 100
+            color_max = 255 if better_quality else 200
+        else:
+            contour_thickness = 2
+            color_min = 100
+            color_max = 200
+        
+        # 필터링된 마스크 처리
+        try:
+            for mask_np, contour, area in all_masks:
+                if min_area <= area <= max_area:
+                    perimeter = cv2.arcLength(contour, True)
+                    circularity = 4 * np.pi * (area / (perimeter ** 2)) if perimeter > 0 else 0
+                    if perimeter > 0 and circularity >= circularity_threshold:
+                        M = cv2.moments(contour)
+                        if M["m00"] != 0:
+                            cX = int(M["m10"] / M["m00"])
+                            cY = int(M["m01"] / M["m00"])
+                            counter.auto_points.append((cX, cY))
+                            if draw_contours:
+                                color = tuple(np.random.randint(color_min, color_max, 3).tolist()) if mask_random_color else (0, 255, 0)
+                                cv2.drawContours(processed_image, [contour], -1, color, contour_thickness)
+        except Exception as e:
+            print(f"콜로니 처리 오류: {str(e)}")
+            # 이미 찾은 auto_points는 유지
+
+        counter.auto_detected_count = len(counter.auto_points)
+        counter.current_image = processed_image
+
+        progress(0.9, desc="결과 생성 중...")
+        try:
+            img_with_points = counter.draw_points()
+            
+            # 결과 이미지를 원본 크기로 다시 조정
+            img_with_points_pil = Image.fromarray(img_with_points)
+            try:
+                # PIL 9.0.0 이상
+                resampling_filter = Image.Resampling.LANCZOS
+            except AttributeError:
+                # PIL 9.0.0 미만
+                resampling_filter = Image.LANCZOS
+            img_with_points_resized = img_with_points_pil.resize((original_width, original_height), resampling_filter)
+            
+            return np.array(img_with_points_resized), counter.get_count_text()
+        except Exception as e:
+            print(f"결과 생성 오류: {str(e)}")
+            # 최소한의 결과라도 반환
+            return processed_image, f"감지된 CFU: {len(counter.auto_points)}개 (결과 생성 중 오류 발생)"
+            
+    except Exception as e:
+        print(f"전체 처리 오류: {str(e)}")
+        if input_image is not None:
+            return np.array(input_image), f"이미지 처리 중 오류 발생: {str(e)}"
+        return None, f"처리 오류: {str(e)}"
 
 # 결과 저장 함수 (원본과 결과 이미지 저장)
 def save_results(original_image, processed_image):
-    output_dir = "outputs"
-    os.makedirs(output_dir, exist_ok=True)
-    unique_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    original_path = os.path.join(output_dir, f"original_{unique_id}.png")
-    processed_path = os.path.join(output_dir, f"카운팅완료_{unique_id}.png")
-    original_image.save(original_path)
-    Image.fromarray(processed_image).save(processed_path)
-    return f"저장 완료:\n- 원본: {original_path}\n- 결과: {processed_path}"
+    try:
+        output_dir = "outputs"
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            return f"결과 폴더 생성 오류: {str(e)}"
+            
+        unique_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        original_path = os.path.join(output_dir, f"original_{unique_id}.png")
+        processed_path = os.path.join(output_dir, f"카운팅완료_{unique_id}.png")
+        
+        try:
+            if original_image is not None:
+                original_image.save(original_path)
+            else:
+                return "원본 이미지가 없습니다."
+        except Exception as e:
+            return f"원본 이미지 저장 오류: {str(e)}"
+            
+        try:
+            if processed_image is not None:
+                Image.fromarray(processed_image).save(processed_path)
+            else:
+                return "처리된 이미지가 없습니다."
+        except Exception as e:
+            if os.path.exists(original_path):
+                # 적어도 원본은 저장했다면 알려줌
+                return f"원본은 저장되었으나 결과 이미지 저장 중 오류 발생: {str(e)}\n- 원본: {original_path}"
+            return f"결과 이미지 저장 오류: {str(e)}"
+            
+        return f"저장 완료:\n- 원본: {original_path}\n- 결과: {processed_path}"
+    
+    except Exception as e:
+        return f"저장 과정 중 오류 발생: {str(e)}"
 
 # 배치 처리 함수 추가
 def batch_process_images(
@@ -414,110 +473,161 @@ def batch_process_images(
     dish_overlap_threshold=0.5,
     progress=gr.Progress()
 ):
-    if not folder_path or not os.path.exists(folder_path):
-        return "폴더 경로가 유효하지 않습니다."
-    
-    # 지원하는 이미지 확장자
-    valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']
-    
-    # 이미지 파일 목록 가져오기
-    image_files = []
-    for ext in valid_extensions:
-        image_files.extend(glob.glob(os.path.join(folder_path, f"*{ext}")))
-        image_files.extend(glob.glob(os.path.join(folder_path, f"*{ext.upper()}")))
-    
-    if not image_files:
-        return "폴더에 처리할 이미지 파일이 없습니다."
-    
-    # 결과 저장 폴더 생성
-    batch_output_dir = os.path.join("outputs", f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    os.makedirs(batch_output_dir, exist_ok=True)
-    
-    # 결과 CSV 파일 생성
-    csv_path = os.path.join(batch_output_dir, "results.csv")
-    results_data = []
-    
-    total_files = len(image_files)
-    processed_count = 0
-    error_count = 0
-    
-    progress(0, desc=f"총 {total_files}개 파일 처리 준비 중...")
-    
-    for idx, img_path in enumerate(image_files):
+    try:
+        # 폴더 경로 유효성 검사
+        if not folder_path or not os.path.exists(folder_path):
+            return "폴더 경로가 유효하지 않습니다."
+        
+        # 지원하는 이미지 확장자
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']
+        
+        # 이미지 파일 목록 가져오기
+        image_files = []
+        for ext in valid_extensions:
+            image_files.extend(glob.glob(os.path.join(folder_path, f"*{ext}")))
+            image_files.extend(glob.glob(os.path.join(folder_path, f"*{ext.upper()}")))
+        
+        if not image_files:
+            return "폴더에 처리할 이미지 파일이 없습니다."
+        
+        # 결과 저장 폴더 생성
         try:
-            file_name = os.path.basename(img_path)
-            progress(idx/total_files, desc=f"처리 중: {file_name} ({idx+1}/{total_files})")
-            
-            # 이미지 로드
-            img = Image.open(img_path)
-            
-            # 이미지 분석
-            result_img, count_text = segment_and_count_colonies(
-                img,
-                conf_threshold=conf_threshold,
-                iou_threshold=iou_threshold,
-                circularity_threshold=circularity_threshold,
-                draw_contours=draw_contours,
-                mask_random_color=mask_random_color,
-                input_size=input_size,
-                better_quality=better_quality,
-                min_area_percentile=min_area_percentile,
-                max_area_percentile=max_area_percentile,
-                use_dish_filtering=use_dish_filtering,
-                dish_overlap_threshold=dish_overlap_threshold
-            )
-            
-            # 결과 텍스트에서 숫자 추출
-            count_lines = count_text.split('\n')
-            total_count = int(count_lines[0].split(': ')[1]) if len(count_lines) > 0 else 0
-            auto_count = int(count_lines[1].split(': ')[1]) if len(count_lines) > 1 else 0
-            manual_count = int(count_lines[2].split(': ')[1]) if len(count_lines) > 2 else 0
-            
-            # 결과 저장
-            result_file_path = os.path.join(batch_output_dir, f"result_{file_name}")
-            Image.fromarray(result_img).save(result_file_path)
-            
-            # CSV 데이터 추가
-            results_data.append({
-                'FileName': file_name,
-                'FilePath': img_path,
-                'TotalCount': total_count,
-                'AutoCount': auto_count,
-                'ManualCount': manual_count,
-                'ResultPath': result_file_path
-            })
-            
-            processed_count += 1
-            
+            batch_output_dir = os.path.join("outputs", f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            os.makedirs(batch_output_dir, exist_ok=True)
         except Exception as e:
-            error_count += 1
-            print(f"파일 처리 오류 ({file_name}): {str(e)}")
-            results_data.append({
-                'FileName': file_name,
-                'FilePath': img_path,
-                'TotalCount': 'ERROR',
-                'AutoCount': 'ERROR',
-                'ManualCount': 'ERROR',
-                'ResultPath': 'ERROR',
-                'Error': str(e)
-            })
+            return f"결과 폴더 생성 오류: {str(e)}"
+        
+        # 결과 CSV 파일 생성
+        csv_path = os.path.join(batch_output_dir, "results.csv")
+        results_data = []
+        
+        total_files = len(image_files)
+        processed_count = 0
+        error_count = 0
+        
+        progress(0, desc=f"총 {total_files}개 파일 처리 준비 중...")
+        
+        for idx, img_path in enumerate(image_files):
+            try:
+                file_name = os.path.basename(img_path)
+                progress(idx/total_files, desc=f"처리 중: {file_name} ({idx+1}/{total_files})")
+                
+                # 이미지 로드
+                try:
+                    img = Image.open(img_path)
+                except Exception as e:
+                    error_count += 1
+                    print(f"이미지 로드 오류 ({file_name}): {str(e)}")
+                    results_data.append({
+                        'FileName': file_name,
+                        'FilePath': img_path,
+                        'TotalCount': 'ERROR',
+                        'AutoCount': 'ERROR',
+                        'ManualCount': 'ERROR',
+                        'ResultPath': 'ERROR',
+                        'Error': f"이미지 로드 오류: {str(e)}"
+                    })
+                    continue
+                
+                # 이미지 분석
+                try:
+                    result_img, count_text = segment_and_count_colonies(
+                        img,
+                        conf_threshold=conf_threshold,
+                        iou_threshold=iou_threshold,
+                        circularity_threshold=circularity_threshold,
+                        draw_contours=draw_contours,
+                        mask_random_color=mask_random_color,
+                        input_size=input_size,
+                        better_quality=better_quality,
+                        min_area_percentile=min_area_percentile,
+                        max_area_percentile=max_area_percentile,
+                        use_dish_filtering=use_dish_filtering,
+                        dish_overlap_threshold=dish_overlap_threshold
+                    )
+                except Exception as e:
+                    error_count += 1
+                    print(f"이미지 분석 오류 ({file_name}): {str(e)}")
+                    results_data.append({
+                        'FileName': file_name,
+                        'FilePath': img_path,
+                        'TotalCount': 'ERROR',
+                        'AutoCount': 'ERROR',
+                        'ManualCount': 'ERROR',
+                        'ResultPath': 'ERROR',
+                        'Error': f"이미지 분석 오류: {str(e)}"
+                    })
+                    continue
+                
+                # 결과 텍스트에서 숫자 추출
+                try:
+                    count_lines = count_text.split('\n')
+                    total_count = int(count_lines[0].split(': ')[1]) if len(count_lines) > 0 else 0
+                    auto_count = int(count_lines[1].split(': ')[1]) if len(count_lines) > 1 else 0
+                    manual_count = int(count_lines[2].split(': ')[1]) if len(count_lines) > 2 else 0
+                except Exception as e:
+                    print(f"카운트 텍스트 파싱 오류 ({file_name}): {str(e)}")
+                    total_count = -1
+                    auto_count = -1
+                    manual_count = -1
+                
+                # 결과 저장
+                try:
+                    result_file_path = os.path.join(batch_output_dir, f"result_{file_name}")
+                    Image.fromarray(result_img).save(result_file_path)
+                except Exception as e:
+                    print(f"결과 저장 오류 ({file_name}): {str(e)}")
+                    result_file_path = "저장 실패"
+                
+                # CSV 데이터 추가
+                results_data.append({
+                    'FileName': file_name,
+                    'FilePath': img_path,
+                    'TotalCount': total_count,
+                    'AutoCount': auto_count,
+                    'ManualCount': manual_count,
+                    'ResultPath': result_file_path
+                })
+                
+                processed_count += 1
+                
+            except Exception as e:
+                error_count += 1
+                print(f"파일 처리 오류 ({file_name}): {str(e)}")
+                results_data.append({
+                    'FileName': file_name,
+                    'FilePath': img_path,
+                    'TotalCount': 'ERROR',
+                    'AutoCount': 'ERROR',
+                    'ManualCount': 'ERROR',
+                    'ResultPath': 'ERROR',
+                    'Error': str(e)
+                })
+        
+        # CSV 파일로 결과 저장
+        try:
+            df = pd.DataFrame(results_data)
+            df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        except Exception as e:
+            print(f"CSV 저장 오류: {str(e)}")
+            return f"처리 완료 ({processed_count}/{total_files} 성공) 하였으나 CSV 저장 중 오류 발생: {str(e)}"
+        
+        progress(1.0, desc="배치 처리 완료!")
+        
+        summary = (
+            f"배치 처리 완료!\n"
+            f"- 총 파일 수: {total_files}\n"
+            f"- 성공: {processed_count}\n"
+            f"- 실패: {error_count}\n"
+            f"- 결과 폴더: {batch_output_dir}\n"
+            f"- 결과 CSV: {csv_path}"
+        )
+        
+        return summary
     
-    # CSV 파일로 결과 저장
-    df = pd.DataFrame(results_data)
-    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-    
-    progress(1.0, desc="배치 처리 완료!")
-    
-    summary = (
-        f"배치 처리 완료!\n"
-        f"- 총 파일 수: {total_files}\n"
-        f"- 성공: {processed_count}\n"
-        f"- 실패: {error_count}\n"
-        f"- 결과 폴더: {batch_output_dir}\n"
-        f"- 결과 CSV: {csv_path}"
-    )
-    
-    return summary
+    except Exception as e:
+        print(f"배치 처리 전체 오류: {str(e)}")
+        return f"배치 처리 중 오류 발생: {str(e)}"
 
 # UI 디자인 (fastsam_prd_v4_ok 기반)
 css = """
@@ -952,105 +1062,148 @@ with gr.Blocks(theme=gr.themes.Default(), css=css) as demo:
         dish_overlap_threshold,
         progress=gr.Progress()
     ):
-        if not files:
-            return "처리할 파일이 없습니다. 파일을 선택해주세요."
-        
-        # 결과 저장 폴더 생성
-        batch_output_dir = os.path.join("outputs", f"batch_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        os.makedirs(batch_output_dir, exist_ok=True)
-        
-        # 결과 CSV 파일 생성
-        csv_path = os.path.join(batch_output_dir, "results.csv")
-        results_data = []
-        
-        total_files = len(files)
-        processed_count = 0
-        error_count = 0
-        
-        progress(0, desc=f"총 {total_files}개 파일 처리 준비 중...")
-        
-        for idx, file_obj in enumerate(files):
+        try:
+            if not files:
+                return "처리할 파일이 없습니다. 파일을 선택해주세요."
+            
+            # 결과 저장 폴더 생성
             try:
-                file_name = os.path.basename(file_obj.name)
-                progress(idx/total_files, desc=f"처리 중: {file_name} ({idx+1}/{total_files})")
-                
-                # 이미지 로드
-                img = Image.open(file_obj.name)
-                
-                # 이미지 분석
-                result_img, count_text = segment_and_count_colonies(
-                    img,
-                    conf_threshold=conf_threshold,
-                    iou_threshold=iou_threshold,
-                    circularity_threshold=circularity_threshold,
-                    draw_contours=draw_contours,
-                    mask_random_color=mask_random_color,
-                    input_size=input_size,
-                    better_quality=better_quality,
-                    min_area_percentile=min_area_percentile,
-                    max_area_percentile=max_area_percentile,
-                    use_dish_filtering=use_dish_filtering,
-                    dish_overlap_threshold=dish_overlap_threshold
-                )
-                
-                # 결과 텍스트에서 숫자 추출
-                count_lines = count_text.split('\n')
-                total_count = int(count_lines[0].split(': ')[1]) if len(count_lines) > 0 else 0
-                auto_count = int(count_lines[1].split(': ')[1]) if len(count_lines) > 1 else 0
-                manual_count = int(count_lines[2].split(': ')[1]) if len(count_lines) > 2 else 0
-                
-                # 결과 저장
-                result_file_path = os.path.join(batch_output_dir, f"result_{file_name}")
-                Image.fromarray(result_img).save(result_file_path)
-                
-                # 원본 이미지 저장
-                original_file_path = os.path.join(batch_output_dir, f"original_{file_name}")
-                img.save(original_file_path)
-                
-                # CSV 데이터 추가
-                results_data.append({
-                    'FileName': file_name,
-                    'FilePath': file_obj.name,
-                    'TotalCount': total_count,
-                    'AutoCount': auto_count,
-                    'ManualCount': manual_count,
-                    'ResultPath': result_file_path,
-                    'OriginalPath': original_file_path
-                })
-                
-                processed_count += 1
-                
+                batch_output_dir = os.path.join("outputs", f"batch_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                os.makedirs(batch_output_dir, exist_ok=True)
             except Exception as e:
-                error_count += 1
-                print(f"파일 처리 오류 ({file_name}): {str(e)}")
-                results_data.append({
-                    'FileName': file_name,
-                    'FilePath': file_obj.name,
-                    'TotalCount': 'ERROR',
-                    'AutoCount': 'ERROR',
-                    'ManualCount': 'ERROR',
-                    'ResultPath': 'ERROR',
-                    'OriginalPath': 'ERROR',
-                    'Error': str(e)
-                })
+                return f"결과 폴더 생성 오류: {str(e)}"
+            
+            # 결과 CSV 파일 생성
+            csv_path = os.path.join(batch_output_dir, "results.csv")
+            results_data = []
+            
+            total_files = len(files)
+            processed_count = 0
+            error_count = 0
+            
+            progress(0, desc=f"총 {total_files}개 파일 처리 준비 중...")
+            
+            for idx, file_obj in enumerate(files):
+                try:
+                    file_name = os.path.basename(file_obj.name)
+                    progress(idx/total_files, desc=f"처리 중: {file_name} ({idx+1}/{total_files})")
+                    
+                    # 이미지 로드
+                    try:
+                        img = Image.open(file_obj.name)
+                    except Exception as e:
+                        error_count += 1
+                        print(f"이미지 로드 오류 ({file_name}): {str(e)}")
+                        results_data.append({
+                            'FileName': file_name,
+                            'FilePath': file_obj.name,
+                            'TotalCount': 'ERROR',
+                            'AutoCount': 'ERROR',
+                            'ManualCount': 'ERROR',
+                            'ResultPath': 'ERROR',
+                            'Error': f"이미지 로드 오류: {str(e)}"
+                        })
+                        continue
+                    
+                    # 이미지 분석
+                    try:
+                        result_img, count_text = segment_and_count_colonies(
+                            img,
+                            conf_threshold=conf_threshold,
+                            iou_threshold=iou_threshold,
+                            circularity_threshold=circularity_threshold,
+                            draw_contours=draw_contours,
+                            mask_random_color=mask_random_color,
+                            input_size=input_size,
+                            better_quality=better_quality,
+                            min_area_percentile=min_area_percentile,
+                            max_area_percentile=max_area_percentile,
+                            use_dish_filtering=use_dish_filtering,
+                            dish_overlap_threshold=dish_overlap_threshold
+                        )
+                    except Exception as e:
+                        error_count += 1
+                        print(f"이미지 분석 오류 ({file_name}): {str(e)}")
+                        results_data.append({
+                            'FileName': file_name,
+                            'FilePath': file_obj.name,
+                            'TotalCount': 'ERROR',
+                            'AutoCount': 'ERROR',
+                            'ManualCount': 'ERROR',
+                            'ResultPath': 'ERROR',
+                            'Error': f"이미지 분석 오류: {str(e)}"
+                        })
+                        continue
+                    
+                    # 결과 텍스트에서 숫자 추출
+                    try:
+                        count_lines = count_text.split('\n')
+                        total_count = int(count_lines[0].split(': ')[1]) if len(count_lines) > 0 else 0
+                        auto_count = int(count_lines[1].split(': ')[1]) if len(count_lines) > 1 else 0
+                        manual_count = int(count_lines[2].split(': ')[1]) if len(count_lines) > 2 else 0
+                    except Exception as e:
+                        print(f"카운트 텍스트 파싱 오류 ({file_name}): {str(e)}")
+                        total_count = -1
+                        auto_count = -1
+                        manual_count = -1
+                    
+                    # 결과 저장
+                    try:
+                        result_file_path = os.path.join(batch_output_dir, f"result_{file_name}")
+                        Image.fromarray(result_img).save(result_file_path)
+                    except Exception as e:
+                        print(f"결과 저장 오류 ({file_name}): {str(e)}")
+                        result_file_path = "저장 실패"
+                    
+                    # CSV 데이터 추가
+                    results_data.append({
+                        'FileName': file_name,
+                        'FilePath': file_obj.name,
+                        'TotalCount': total_count,
+                        'AutoCount': auto_count,
+                        'ManualCount': manual_count,
+                        'ResultPath': result_file_path
+                    })
+                    
+                    processed_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    print(f"파일 처리 오류 ({file_name}): {str(e)}")
+                    results_data.append({
+                        'FileName': file_name,
+                        'FilePath': file_obj.name,
+                        'TotalCount': 'ERROR',
+                        'AutoCount': 'ERROR',
+                        'ManualCount': 'ERROR',
+                        'ResultPath': 'ERROR',
+                        'Error': str(e)
+                    })
+            
+            # CSV 파일로 결과 저장
+            try:
+                df = pd.DataFrame(results_data)
+                df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+            except Exception as e:
+                print(f"CSV 저장 오류: {str(e)}")
+                return f"처리 완료 ({processed_count}/{total_files} 성공) 하였으나 CSV 저장 중 오류 발생: {str(e)}"
+            
+            progress(1.0, desc="배치 처리 완료!")
+            
+            summary = (
+                f"배치 처리 완료!\n"
+                f"- 총 파일 수: {total_files}\n"
+                f"- 성공: {processed_count}\n"
+                f"- 실패: {error_count}\n"
+                f"- 결과 폴더: {batch_output_dir}\n"
+                f"- 결과 CSV: {csv_path}"
+            )
+            
+            return summary
         
-        # CSV 파일로 결과 저장
-        df = pd.DataFrame(results_data)
-        df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-        
-        progress(1.0, desc="배치 처리 완료!")
-        
-        summary = (
-            f"배치 처리 완료!\n"
-            f"- 총 파일 수: {total_files}\n"
-            f"- 성공: {processed_count}\n"
-            f"- 실패: {error_count}\n"
-            f"- 결과 폴더: {batch_output_dir}\n"
-            f"- 결과 CSV: {csv_path}\n\n"
-            f"결과 폴더를 열려면 '결과 폴더 열기' 버튼을 클릭하세요."
-        )
-        
-        return summary
+        except Exception as e:
+            print(f"배치 파일 처리 전체 오류: {str(e)}")
+            return f"배치 파일 처리 중 오류 발생: {str(e)}"
     
     # 이벤트 핸들러 연결
     batch_process_folder_btn.click(
