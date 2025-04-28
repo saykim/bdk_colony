@@ -548,9 +548,14 @@ def segment_and_count_colonies(
     better_quality=False,
     withContours=True,
     mask_random_color=True, # 기본값 True 사용
-    min_area_percentile=1, # 백분위수 대신 실제 픽셀 면적으로 변경 고려
-    max_area_percentile=99, # 백분위수 대신 실제 픽셀 면적으로 변경 고려
+    # min_area_percentile=1, # 기존 파라미터 제거
+    # max_area_percentile=99, # 기존 파라미터 제거
     circularity_threshold=0.8,
+    # --- 면적 필터링 파라미터 추가 ---
+    enable_area_filter=False,
+    min_area_percentile=1,
+    max_area_percentile=99,
+    # -------------------------------
     progress=gr.Progress()
 ):
     """이미지를 분석하고 CFU를 감지하여 카운팅합니다."""
@@ -615,13 +620,20 @@ def segment_and_count_colonies(
              # 백분위수 대신 실제 면적 임계값 사용 고려 (옵션)
              # min_area = np.percentile(colony_areas, min_area_percentile)
              # max_area = np.percentile(colony_areas, max_area_percentile)
-             min_area = 3 # 최소 면적 임계값을 3으로 변경
-             max_area = input_size * input_size * 0.1 # 예시: 최대 이미지 면적의 10% (조정 필요)
+             # min_area = 3 # 최소 면적 임계값을 3으로 변경 # 하드코딩된 값 삭제
+             # max_area = input_size * input_size * 0.1 # 하드코딩된 값 삭제
+
+             # --- 면적 필터링 로직 수정 ---
+             if enable_area_filter:
+                 min_area = np.percentile(colony_areas, min_area_percentile)
+                 max_area = np.percentile(colony_areas, max_area_percentile)
+                 print(f"면적 필터링 활성화: 최소 {min_area:.2f}, 최대 {max_area:.2f} (백분위 {min_area_percentile}-{max_area_percentile} %)")
+             # ---------------------------
 
              for ann, area in zip(colony_annotations_all, colony_areas):
-                 # 면적 필터링 (현재 주석 처리되어 비활성화 상태 유지)
-                 # if area < min_area or area > max_area:
-                 #     continue
+                 # 면적 필터링 (필터링 활성화 시 적용)
+                 if enable_area_filter and (area < min_area or area > max_area):
+                      continue
 
                  ann_cpu = ann.cpu().numpy()
                  if ann_cpu.ndim == 3 and ann_cpu.shape[0] == 1: ann_cpu = ann_cpu[0]
@@ -741,8 +753,13 @@ def handle_batch_upload(
     conf_threshold: float,
     better_quality: bool,
     withContours: bool,
+    # min_area_percentile: int,
+    # max_area_percentile: int,
+    # ---
+    enable_area_filter: bool,
     min_area_percentile: int,
     max_area_percentile: int,
+    # ---
     circularity_threshold: float,
     progress=gr.Progress()
 ) -> Tuple[str, List[Tuple[np.ndarray, str]]]: # 결과 메시지와 갤러리 데이터 반환
@@ -790,8 +807,13 @@ def handle_batch_upload(
                     better_quality=better_quality,
                     withContours=withContours,
                     mask_random_color=True, # 배치에서는 랜덤 색상 고정
+                    # min_area_percentile=min_area_percentile,
+                    # max_area_percentile=max_area_percentile,
+                    # ---
+                    enable_area_filter=enable_area_filter,
                     min_area_percentile=min_area_percentile,
                     max_area_percentile=max_area_percentile,
+                    # ---
                     circularity_threshold=circularity_threshold
                 )
 
@@ -993,8 +1015,10 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                         circularity_threshold_slider = gr.Slider(0.0, 1.0, 0.8, step=0.01, label="원형도 임계값", info="1에 가까울수록 원형")
                         withContours_checkbox = gr.Checkbox(label="윤곽선 표시", value=True, info="콜로니 경계 표시")
                         better_quality_checkbox = gr.Checkbox(label="향상된 품질 (미사용)", value=True, visible=False)
-                        min_area_percentile_slider = gr.Slider(0, 10, 1, step=1, label="최소 크기 %(미사용)", visible=False)
-                        max_area_percentile_slider = gr.Slider(90, 100, 99, step=1, label="최대 크기 %(미사용)", visible=False)
+                        # --- 면적 필터링 UI 추가 ---
+                        enable_area_filter_checkbox = gr.Checkbox(label="면적 필터링 사용", value=False, info="체크 시 아래 백분위 기준으로 콜로니 필터링")
+                        min_area_percentile_slider = gr.Slider(0, 10, 1, step=1, label="최소 면적 (백분위 %)", visible=True) # visible=True로 변경
+                        max_area_percentile_slider = gr.Slider(90, 100, 99, step=1, label="최대 면적 (백분위 %)", visible=True) # visible=True로 변경
 
                     segment_button = gr.Button(
                         "🔍 이미지 분석 실행",
@@ -1103,9 +1127,14 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                     # --- SyntaxError 수정: 해당 라인 제거 ---
                     # mask_random_color=gr.Checkbox(value=True, visible=False),
                     # --------------------------------------
+                    # min_area_percentile_slider, # 기존 슬라이더 제거
+                    # max_area_percentile_slider, # 기존 슬라이더 제거
+                    circularity_threshold_slider,
+                    # --- 면적 필터링 UI 입력 추가 ---
+                    enable_area_filter_checkbox,
                     min_area_percentile_slider,
                     max_area_percentile_slider,
-                    circularity_threshold_slider
+                    # -------------------------------
                 ],
                 outputs=[output_image, colony_count_text]
             )
@@ -1158,8 +1187,10 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                         batch_circularity = gr.Slider(0.0, 1.0, 0.8, step=0.01, label="원형도 임계값")
                         batch_withContours = gr.Checkbox(label="윤곽선 표시", value=True)
                         batch_better_quality = gr.Checkbox(label="향상된 품질 (미사용)", value=True, visible=False)
-                        batch_min_area = gr.Slider(0, 10, 1, step=1, label="최소 크기 %(미사용)", visible=False)
-                        batch_max_area = gr.Slider(90, 100, 99, step=1, label="최대 크기 %(미사용)", visible=False)
+                        # --- 배치 면적 필터링 UI 추가 ---
+                        batch_enable_area_filter = gr.Checkbox(label="면적 필터링 사용", value=False)
+                        batch_min_area = gr.Slider(0, 10, 1, step=1, label="최소 면적 (백분위 %)", visible=True) # visible=True로 변경
+                        batch_max_area = gr.Slider(90, 100, 99, step=1, label="최대 면적 (백분위 %)", visible=True) # visible=True로 변경
 
                     batch_process_button = gr.Button(
                         "🚀 배치 처리 시작",
@@ -1210,9 +1241,14 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css) as demo:
                     batch_conf_threshold,
                     batch_better_quality,
                     batch_withContours,
+                    # batch_min_area, # 기존 슬라이더 제거
+                    # batch_max_area, # 기존 슬라이더 제거
+                    batch_circularity,
+                    # --- 배치 면적 필터링 UI 입력 추가 ---
+                    batch_enable_area_filter,
                     batch_min_area,
                     batch_max_area,
-                    batch_circularity
+                    # -------------------------------
                 ],
                 outputs=[batch_summary, batch_gallery] # 요약 텍스트와 갤러리 데이터 반환
             )
